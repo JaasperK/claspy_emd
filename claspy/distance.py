@@ -1,5 +1,7 @@
 import numpy as np
-from numba import njit, objmode
+from numba import jit, njit, objmode, types
+
+from scipy.optimize import linprog
 
 
 @njit(fastmath=True, cache=True)
@@ -205,10 +207,100 @@ def cinvariant_euclidean_distance(idx, dot, window_size, preprocessing, squared=
     return np.sqrt(ed) * np.sqrt(cf)
 
 
+@njit(fastmath=True, cache=True)
+def sliding_csum_abs(time_series, window_size):
+    """
+    Computes the sliding cumulative sum of absolute values of each time series subsequence
+    with a specified window size.
+
+    Parameters:
+    -----------
+    time_series: numpy.ndarray
+        A 1-dimensional numpy array containing the time series data.
+    window_size: int
+        The size of the sliding window.
+
+    Returns:
+    --------
+    time_series: numpy.ndarray
+        A 1-dimensional numpy array containing the time series data.
+    csum_abs: numpy.ndarray
+        A 1-dimensional numpy array containing the cumulative sum of absolute values of each
+        time series subsequence.
+    """
+    csum = np.concatenate((np.zeros(1, dtype=np.float64), np.cumsum(np.abs(time_series))))
+    return (time_series, csum[window_size:] - csum[:-window_size])
+
+
+@njit(fastmath=True, cache=True)
+def lp_params(idx, jdx, window_size, time_series, csum_abs):
+    if csum_abs[idx] >= csum_abs[jdx]:
+        supplier_idx = idx  # s1
+        consumer_idx = jdx  # s2
+    else:
+        supplier_idx = jdx  # s1
+        consumer_idx = idx  # s2
+
+    c = np.empty((window_size * window_size), dtype=float)
+    for i in range(window_size):
+        for j in range(window_size):
+            c[i * window_size + j] = np.abs(supplier_idx + i - (consumer_idx + j))
+
+    b_eq = np.abs(time_series[consumer_idx : consumer_idx + window_size])
+    A_eq = np.zeros((window_size, window_size * window_size), dtype=np.int64)
+    for block in range(window_size):
+        for i in range(window_size):
+            A_eq[i, block * window_size + i] = 1
+    
+    b_ub = np.abs(time_series[supplier_idx : supplier_idx + window_size])
+    A_ub = np.zeros((window_size, window_size * window_size), dtype=np.int64)
+    for i in range(window_size):
+        for j in range(window_size):
+            A_ub[i, i * window_size + j] = 1
+
+    return c, A_eq, b_eq, A_ub, b_ub
+
+@njit(fastmath=True, cache=True)
+def earth_movers_distance(idx, dot, window_size, preprocessing):
+    """
+    Computes the earth movers distance between a time series subsequence at index `idx`
+    and all other subsequences (of length window_size) using a linear program.
+
+    Parameters
+    ----------
+    idx : int
+        The index of the subsequence in the time series.
+    dot : numpy.ndarray
+        The dot products between the subsequence at index `idx` and all other subsequences.
+    window_size : int
+        The length of the subsequences.
+    preprocessing: tuple
+        A tuple containing the 1-D NumPy array of the time series data and
+        a 1-D NumPy array containing the cumulative sum of absolute values of the time series.
+
+    Returns
+    -------
+    dist : numpy.ndarray
+        The earth movers distances between the subsequence at index `idx` and all other subsequences.
+    """
+    time_series, csum_abs = preprocessing
+
+    dist = np.zeros(csum_abs.shape[0])
+    with objmode:
+        bounds = [(0, None)] * (window_size ** 2)  # bounds for the window_size^2 decision variables
+        for jdx in range(len(csum_abs)):
+            if idx == jdx:
+                continue
+            c, A_eq, b_eq, A_ub, b_ub = lp_params(idx, jdx, window_size, time_series, csum_abs)
+            res = linprog(c, A_eq=A_eq, b_eq=b_eq, A_ub=A_ub, b_ub=b_ub, bounds=bounds)
+            dist[jdx] = res.fun
+    return dist
+
 _DISTANCE_MAPPING = {
     "znormed_euclidean_distance": (sliding_mean_std, znormed_euclidean_distance),
     "euclidean_distance": (sliding_csum, euclidean_distance),
-    "cinvariant_euclidean_distance": (sliding_csum_dcsum, cinvariant_euclidean_distance)
+    "cinvariant_euclidean_distance": (sliding_csum_dcsum, cinvariant_euclidean_distance),
+    "earth_movers_distance" : (sliding_csum_abs, earth_movers_distance)
 }
 
 
