@@ -1,7 +1,5 @@
 import time
 import unittest
-import logging
-logging.basicConfig(level=logging.DEBUG)
 
 import numpy as np
 
@@ -18,7 +16,7 @@ class EMDTest(unittest.TestCase):
 
         idx, (dataset, window_size, cps, time_series) = list(tssb.iterrows())[0]
 
-        logging.debug(f"{dataset} with {len(time_series)} values.")
+        print(f"{dataset} with {len(time_series)} values.")
         
         clasp = BinaryClaSPSegmentation(distance="earth_movers_distance", validation=None)
         found_cps = clasp.fit_predict(time_series)
@@ -28,5 +26,5 @@ class EMDTest(unittest.TestCase):
         runtime = np.round(time.process_time() - runtime, 3)
         score = np.mean(scores)
 
-        logging.debug(f"Covering is: {score}")
+        print(f"Covering is: {score}")
         assert score >= 0.0

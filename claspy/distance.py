@@ -247,16 +247,16 @@ def lp_params(idx, jdx, window_size, time_series, csum_abs):
             c[i * window_size + j] = np.abs(supplier_idx + i - (consumer_idx + j))
 
     b_eq = np.abs(time_series[consumer_idx : consumer_idx + window_size])
-    A_eq = np.zeros((window_size, window_size * window_size), dtype=np.int64)
+    A_eq = np.zeros((window_size, window_size * window_size), dtype=np.float64)
     for block in range(window_size):
         for i in range(window_size):
-            A_eq[i, block * window_size + i] = 1
+            A_eq[i, block * window_size + i] = 1.0
     
     b_ub = np.abs(time_series[supplier_idx : supplier_idx + window_size])
-    A_ub = np.zeros((window_size, window_size * window_size), dtype=np.int64)
+    A_ub = np.zeros((window_size, window_size * window_size), dtype=np.float64)
     for i in range(window_size):
         for j in range(window_size):
-            A_ub[i, i * window_size + j] = 1
+            A_ub[i, i * window_size + j] = 1.0
 
     return c, A_eq, b_eq, A_ub, b_ub
 
