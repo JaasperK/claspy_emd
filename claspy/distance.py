@@ -241,7 +241,7 @@ def lp_params(idx, jdx, window_size, time_series, csum_abs):
         supplier_idx = jdx  # s1
         consumer_idx = idx  # s2
 
-    c = np.empty((window_size * window_size), dtype=float)
+    c = np.empty((window_size * window_size), dtype=np.float64)
     for i in range(window_size):
         for j in range(window_size):
             c[i * window_size + j] = np.abs(supplier_idx + i - (consumer_idx + j))
