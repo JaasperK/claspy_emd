@@ -213,18 +213,18 @@ def sliding_csum_abs(time_series, window_size):
     Computes the sliding cumulative sum of absolute values of each time series subsequence
     with a specified window size.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     time_series: numpy.ndarray
         A 1-dimensional numpy array containing the time series data.
     window_size: int
         The size of the sliding window.
 
-    Returns:
-    --------
-    time_series: numpy.ndarray
+    Returns
+    -------
+    time_series : numpy.ndarray
         A 1-dimensional numpy array containing the time series data.
-    csum_abs: numpy.ndarray
+    csum_abs : numpy.ndarray
         A 1-dimensional numpy array containing the cumulative sum of absolute values of each
         time series subsequence.
     """
@@ -232,8 +232,79 @@ def sliding_csum_abs(time_series, window_size):
     return (time_series, csum[window_size:] - csum[:-window_size])
 
 
-@njit(fastmath=True, cache=True)
+@njit(cache=True)
+def cost_vector(window_size, supplier_idx, consumer_idx):
+    """
+    Setup the cost vector (the vector of coefficients of the objective function) of the
+    linear programming problem.
+
+    Parameters
+    ----------
+    window_size : int
+        Size of the sliding window.
+    supplier_idx : int
+        Index of the subsequence that 
+    """
+    c = np.zeros((window_size * window_size) + window_size, dtype=np.float64)
+    for i in range(window_size):
+        for j in range(window_size):
+            c[i * window_size + j] = np.abs(supplier_idx + i - (consumer_idx + j))
+    return c
+
+
+@njit("float64[:,:](int64)", cache=True)
+def constraint_matrix(window_size):
+    """
+    Setup the constraint matrix of the linear programming problem. 
+
+    Parameters
+    ----------
+    window_size : int
+        Size of the sliding window.
+    
+    Returns
+    -------
+    A : numpy.ndarray
+        The constraint matrix of the linear programming problem.
+    """
+    A_eq = np.zeros((window_size, window_size * window_size + window_size), dtype=np.float64)
+    for j in range(window_size):
+        for i in range(window_size):
+            A_eq[i, j * window_size + i] = 1.0
+
+    A_ub = np.zeros((window_size, window_size * window_size + window_size), dtype=np.float64)
+    for i in range(window_size):
+        for j in range(window_size):
+            A_ub[i, i * window_size + j] = 1.0
+        A_ub[i, window_size * window_size + i] = 1.0
+    
+    return np.vstack((np.ascontiguousarray(A_eq), np.ascontiguousarray(A_ub)))  # numba hack
+
+
+@njit(cache=True)
 def lp_params(idx, jdx, window_size, time_series, csum_abs):
+    """
+    Setup the cost and solution vectors of the linear programming problem.
+
+    Parameters
+    ----------
+    idx, jdx : int
+        Indices of subsequences in the time series. 
+    window_size : int
+        Size of the sliding window.
+    time_series : numpy.ndarray
+        The 1-D array containing the time series data.
+    csum_abs : numpy.ndarray
+        The 1-D array containing the cumulative sums of absolute values for all
+        subsequences in the time series.
+    
+    Returns
+    -------
+    c : numpy.ndarray
+        The coefficients of the objective function for the linear programming problem.
+    b : numpy.ndarray
+        The right-hand side of the (in-)equalities for the linear programming problem.
+    """
     if csum_abs[idx] >= csum_abs[jdx]:
         supplier_idx = idx  # s1
         consumer_idx = jdx  # s2
@@ -241,30 +312,87 @@ def lp_params(idx, jdx, window_size, time_series, csum_abs):
         supplier_idx = jdx  # s1
         consumer_idx = idx  # s2
 
-    c = np.zeros((window_size * window_size), dtype=np.float64)
-    for i in range(window_size):
-        for j in range(window_size):
-            c[i * window_size + j] = np.abs(supplier_idx + i - (consumer_idx + j))
+    c = cost_vector(window_size, supplier_idx, consumer_idx)
 
     b_eq = np.abs(time_series[consumer_idx : consumer_idx + window_size])
-    A_eq = np.zeros((window_size, window_size * window_size), dtype=np.float64)
-    for j in range(window_size):
-        for i in range(window_size):
-            A_eq[i, j * window_size + i] = 1.0
-    
     b_ub = np.abs(time_series[supplier_idx : supplier_idx + window_size])
-    A_ub = np.zeros((window_size, window_size * window_size), dtype=np.float64)
-    for i in range(window_size):
-        for j in range(window_size):
-            A_ub[i, i * window_size + j] = 1.0
+    b = np.concatenate((b_eq, b_ub))
 
-    return c, A_eq, b_eq, A_ub, b_ub
+    return c, b
+
+
+@njit("float64[:,:](float64[:], float64[:,:], float64[:])", cache=True)
+def initial_tableau(c, A, b):
+    """
+    Setup the initial tableau for the tableau simplex.
+
+    Parameters
+    ----------
+    c : numpy.ndarray
+        Coefficients of the objective function, a.k.a. the cost vector.
+    A : numpy.ndarray
+        Constraint matrix of the linear programming problem.
+    b : numpy.ndarray
+        Right-hand side of the constraints for the linear programming problem.
+    """
+    t = np.vstack((-np.ascontiguousarray(c).reshape(1, c.size), A))  # numba hack
+    b = np.concatenate((np.zeros(1), b))
+    return np.column_stack((t, b.reshape(b.size, 1)))
+
+
+@njit("float64(float64[:], float64[:,:], float64[:])", fastmath=True, cache=True)
+def simplex(c, A, b):
+    """
+    Implementation of the tableau simplex algorithm. Solves linear programming
+    problems in standard form, meaning all inequalities have been converted to
+    equalities and c and A contain the logical/slack variables. The problem can
+    be formalized like this:
+    ```
+    max z = c @ x
+    s.t. Ax = b
+    where x >= 0
+    ``` 
+    
+    Parameters
+    ----------
+    c : np.ndarray
+        Coefficients of the objective function.
+    A : np.ndarray
+        Constraint matrix.
+    b : np.ndarray
+        Right-hand side of constraints.
+
+    Returns
+    -------
+    z : float
+        Value of the objective function.
+    """
+    tab = initial_tableau(c, A, b)
+    tab_rows = np.arange(tab.shape[0])
+
+    while np.any(tab[0] < 0.0):  # solution is not optimal
+        pivot_col = np.argmin(tab[0, :-1])
+        r1 = tab[1:, pivot_col]
+        r1 = np.where(r1 <= 0, -1, r1)  # avoid division by 0
+        r2 = tab[1:, -1]
+        ratio = np.where(r1 > 0, r2 / r1, np.inf)
+        pivot_row = np.argmin(ratio) + 1  # +1 to account for the z-row that was not included in r1 and r2
+
+        # update tableau, probably not necessary since pivot element is always 1 in our special case
+        # tab[pivot_row] = tab[pivot_row] / tab[pivot_row, pivot_col]
+        
+        for i in tab_rows[tab_rows != pivot_row]:
+            tab[i] = tab[i] - tab[i, pivot_col] * tab[pivot_row]
+    
+    return tab[0][-1]
+
 
 @njit(fastmath=True, cache=True)
 def earth_movers_distance(idx, dot, window_size, preprocessing):
     """
-    Computes the earth movers distance between a time series subsequence at index `idx`
-    and all other subsequences (of length window_size) using a linear program.
+    Computes the earth movers distance between a time series subsequence at index `idx` and
+    all other subsequences (of length window_size) by solving a transportation problem, a
+    form of a linear programming problem.
 
     Parameters
     ----------
@@ -286,14 +414,13 @@ def earth_movers_distance(idx, dot, window_size, preprocessing):
     time_series, csum_abs = preprocessing
 
     dist = np.zeros(csum_abs.shape[0])
-    with objmode:
-        bounds = [(0, None)] * (window_size ** 2)  # bounds for the window_size^2 decision variables
-        for jdx in range(len(csum_abs)):
-            if idx == jdx:
-                continue
-            c, A_eq, b_eq, A_ub, b_ub = lp_params(idx, jdx, window_size, time_series, csum_abs)
-            res = linprog(c, A_eq=A_eq, b_eq=b_eq, A_ub=A_ub, b_ub=b_ub, bounds=bounds)
-            dist[jdx] = res.fun
+    A = constraint_matrix(window_size)  # the same for each run
+    for jdx in range(len(csum_abs)):
+        if idx == jdx:
+            continue
+        c, b = lp_params(idx, jdx, window_size, time_series, csum_abs)
+        z = simplex(c, A, b)
+        dist[jdx] = z
     return dist
 
 _DISTANCE_MAPPING = {
