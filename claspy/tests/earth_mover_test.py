@@ -13,13 +13,12 @@ class EMDTest(unittest.TestCase):
         scores = []
 
         for idx, (dataset, window_size, cps, time_series) in list(tssb.iterrows()):
-            print(f"{dataset} with {len(time_series)} values.")
             
             clasp = BinaryClaSPSegmentation(distance="earth_movers_distance", validation=None)
             found_cps = clasp.fit_predict(time_series)
             score = np.round(covering({0: cps}, found_cps, time_series.shape[0]), 5)
             scores.append(score)
 
-            print(f"Covering is: {score}")
+            print(f"{dataset}: {score}")
         print(np.mean(scores))
         print(scores)
