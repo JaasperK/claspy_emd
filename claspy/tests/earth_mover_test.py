@@ -1,4 +1,3 @@
-import time
 import unittest
 
 import numpy as np
@@ -18,7 +17,7 @@ class EMDTest(unittest.TestCase):
             
             clasp = BinaryClaSPSegmentation(distance="earth_movers_distance", validation=None)
             found_cps = clasp.fit_predict(time_series)
-            score = np.round(covering({0: cps}, found_cps, time_series.shape[0]), 2)
+            score = np.round(covering({0: cps}, found_cps, time_series.shape[0]), 5)
             scores.append(score)
 
             print(f"Covering is: {score}")
