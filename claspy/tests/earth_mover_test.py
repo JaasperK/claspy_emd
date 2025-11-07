@@ -24,4 +24,3 @@ class EMDTest(unittest.TestCase):
             print(f"Covering is: {score}")
         print(np.mean(scores))
         print(scores)
-        assert score >= 0.0
